@@ -1,99 +1,62 @@
 use std::error::Error;
+use std::fmt::Display;
 use std::net::Ipv4Addr;
+use std::ops::Deref;
 
-type Result<T> = std::result::Result<T, RanddressError>;
+type Result<T> = std::result::Result<T, NetnetError>;
 
 #[derive(Debug, PartialEq)]
-pub enum RanddressError {
-    InvalidMask(String),
+pub enum NetnetError {
+    InvalidSubnet(String),
 }
 
-impl std::fmt::Display for RanddressError {
+impl std::fmt::Display for NetnetError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::InvalidMask(reason) => write!(f, "invalid mask: {}", reason),
+            Self::InvalidSubnet(reason) => write!(f, "invalid mask: {}", reason),
         }
     }
 }
 
-impl Error for RanddressError {}
+impl Error for NetnetError {}
 
-// returns `Ipv4Addr` representing subnet mask, the
-// given argument `bit_index` shifts the `u32::MAX` to the left
-// representing a valid netmask
-//
-// 0xffffffff << 4 = 0xfffffff0 = 255.255.255.251
-// this cidr can contain 4 addresses
-#[inline]
-fn mask_by_bit(bit_index: u32) -> Ipv4Addr {
-    Ipv4Addr::from(u32::MAX << bit_index)
-}
-
-// returns the last bit index that was `1` in the given number
-// counting starts from one
-#[inline]
-fn first_bit_on(n: u32) -> u32 {
-    u32::BITS - n.leading_zeros()
-}
-
-/// structure representing pair of network address
-/// and its subnet mask, the address should NOT point to a host
-/// address (unless its a 32 bit mask), it points to the network address
-pub struct NetworkV4 {
+/// the AddressV4 type used to represent single ipv4 address
+/// the uses `std::net::Ipv4Addr` under the hood, and implement &Deref
+/// that returns the underlying address, so anywhere you use `Ipv4Addr` you will be able
+/// to also use `AddressV4`
+#[derive(Clone, PartialEq, Debug)]
+pub struct AddressV4 {
     address: Ipv4Addr,
-    mask: Ipv4Addr,
 }
 
-/// structure that generates networks with respect
-/// to the network subnet masks
-pub struct NetworkV4Generator {
-    state: [Option<NetworkV4>; u32::BITS as usize],
-    last_address: Option<NetworkV4>,
+/// uses to distinguish between regular addresses and subnets, this type
+/// also have constraints when created to make sure the given subnet
+/// is a valid subnet mask
+#[derive(Clone, PartialEq, Debug)]
+pub struct SubnetV4 {
+    subnet: AddressV4,
 }
 
-impl NetworkV4Generator {
-    pub fn new() -> Self {
+/// a pair of `AddressV4` and `SubnetV4` to represent a network address,
+/// based on the pair it is possible to create supernets and subnets
+#[derive(Clone, PartialEq, Debug)]
+pub struct NetworkV4 {
+    address: AddressV4,
+    subnet: SubnetV4,
+}
+
+impl AddressV4 {
+    pub fn new(a: u8, b: u8, c: u8, d: u8) -> Self {
         Self {
-            state: [const { None }; u32::BITS as usize],
-            last_address: None,
+            address: Ipv4Addr::new(a, b, c, d),
         }
-    }
-
-    pub fn start_from(network: NetworkV4) -> Self {
-        Self {
-            state: [const { None }; u32::BITS as usize],
-            last_address: Some(network),
-        }
-    }
-
-    /// returns how may addresses available, calculated based on
-    /// the last generated address
-    pub fn available(&self) -> u32 {
-        if let Some(network) = &self.last_address {
-            return u32::MAX - network.broadcast().to_bits();
-        }
-        return u32::MAX;
-    }
-
-    pub fn take(&mut self, n: u32) -> Vec<Ipv4Addr> {
-        todo!()
-    }
-}
-
-impl Default for NetworkV4Generator {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
 impl NetworkV4 {
-    pub fn new(address: Ipv4Addr, mask: Ipv4Addr) -> Result<Self> {
-        // if mask.to_bits() > u32::BITS {
-        //     return Err(RanddressError::InvalidMask(
-        //         format!("impossible mask")
-        //     );
-        // }
-        Ok(Self { address, mask })
+    pub fn new(address: AddressV4, subnet: SubnetV4) -> Self {
+        // TODO normilize address to network address
+        Self { address, subnet }
     }
 
     /// returns the network address
@@ -101,31 +64,129 @@ impl NetworkV4 {
         &self.address
     }
 
-    /// returns the network mask
-    pub fn mask(&self) -> &Ipv4Addr {
-        &self.mask
+    /// returns the network subnet
+    pub fn subnet(&self) -> &SubnetV4 {
+        &self.subnet
     }
 
-    /// returns the network broadcast address, if network
-    /// is 32 bit mask, then there is only 1 address and thats
-    /// equal to `address`
-    pub fn broadcast(&self) -> Ipv4Addr {
-        let subnet_bit = self.mask.to_bits().trailing_zeros();
-        let last_address = self
-            .address
-            .to_bits()
-            .saturating_sub(1)
-            .saturating_add(u32::pow(2, subnet_bit));
-        return Ipv4Addr::from(last_address);
+    /// returns the network broadcast address, if the
+    /// network subnet mask is /32, then the return value
+    /// will be equal to the return value of the `address` function
+    pub fn broadcast(&self) -> AddressV4 {
+        if self.subnet.host_bits() == 0 {
+            self.address.clone()
+        } else {
+            let jumps = u32::pow(2, self.subnet.host_bits());
+            (self.address.to_bits() + jumps - 1).into()
+        }
+    }
+
+    /// returns the number of hosts
+    /// available in the network
+    pub fn available_hosts(&self) -> u32 {
+        u32::pow(2, self.subnet.host_bits()).saturating_sub(2)
     }
 }
 
-impl From<(Ipv4Addr, Ipv4Addr)> for NetworkV4 {
-    fn from(value: (Ipv4Addr, Ipv4Addr)) -> Self {
-        Self {
-            address: value.0,
-            mask: value.1,
-        }
+impl SubnetV4 {
+    pub fn new(a: u8, b: u8, c: u8, d: u8) -> Result<Self> {
+        Ok(Self {
+            subnet: AddressV4::new(a, b, c, d),
+        })
+    }
+
+    /// returns the subnet mask as cidr number
+    #[inline]
+    pub fn cidr(&self) -> u32 {
+        self.subnet.to_bits().leading_ones()
+    }
+
+    /// returns how many host bits
+    /// in the subnet are going for the network
+    #[inline]
+    pub fn networ_bits(&self) -> u32 {
+        self.cidr()
+    }
+
+    /// returns how many host bits
+    /// in the subnet are going for the hosts
+    #[inline]
+    pub fn host_bits(&self) -> u32 {
+        self.subnet.to_bits().trailing_zeros()
+    }
+}
+
+impl Display for AddressV4 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.address)
+    }
+}
+
+impl Display for NetworkV4 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.address, self.subnet)
+    }
+}
+
+impl Display for SubnetV4 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.subnet)
+    }
+}
+
+impl From<[u8; 4]> for AddressV4 {
+    fn from(value: [u8; 4]) -> Self {
+        Self::new(value[0], value[1], value[2], value[3])
+    }
+}
+
+impl From<u32> for AddressV4 {
+    fn from(value: u32) -> Self {
+        let octets = value.to_be_bytes();
+        Self::from(octets)
+    }
+}
+
+impl From<(AddressV4, SubnetV4)> for NetworkV4 {
+    fn from(value: (AddressV4, SubnetV4)) -> Self {
+        Self::new(value.0, value.1)
+    }
+}
+
+impl TryFrom<([u8; 4], [u8; 4])> for NetworkV4 {
+    type Error = NetnetError;
+    fn try_from(value: ([u8; 4], [u8; 4])) -> std::prelude::v1::Result<Self, Self::Error> {
+        let subnet = SubnetV4::try_from(value.1)?;
+        Ok(Self::new(value.0.into(), subnet))
+    }
+}
+
+impl TryFrom<u32> for SubnetV4 {
+    type Error = NetnetError;
+    fn try_from(value: u32) -> std::prelude::v1::Result<Self, Self::Error> {
+        Self::try_from(Ipv4Addr::from(value))
+    }
+}
+
+impl TryFrom<[u8; 4]> for SubnetV4 {
+    type Error = NetnetError;
+    fn try_from(value: [u8; 4]) -> std::prelude::v1::Result<Self, Self::Error> {
+        Self::try_from(Ipv4Addr::from(value))
+    }
+}
+
+impl TryFrom<Ipv4Addr> for SubnetV4 {
+    type Error = NetnetError;
+    fn try_from(value: Ipv4Addr) -> std::prelude::v1::Result<Self, Self::Error> {
+        let octets = value.octets();
+        Self::new(octets[0], octets[1], octets[2], octets[3])
+    }
+}
+
+impl Deref for AddressV4 {
+    type Target = Ipv4Addr;
+    fn deref(&self) -> &Self::Target {
+        &self.address
     }
 }
 
@@ -134,68 +195,56 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_availability() {
-        let start_address = NetworkV4::new(
-            Ipv4Addr::new(255, 255, 255, 0),
-            Ipv4Addr::new(255, 255, 255, 0),
-        )
-        .unwrap();
-        let network_generator = NetworkV4Generator::start_from(start_address);
-
-        assert_eq!(network_generator.available(), 0);
-
-        let network_generator = NetworkV4Generator::start_from(
-            NetworkV4::new(
-                Ipv4Addr::new(255, 255, 254, 0),
-                Ipv4Addr::new(255, 255, 255, 0),
-            )
-            .unwrap(),
-        );
-        assert_eq!(network_generator.available(), 255)
-    }
-
-    #[test]
     fn test_network_broadcast() {
         let network = NetworkV4::new(
-            Ipv4Addr::new(10, 0, 0, 0),
-            Ipv4Addr::new(255, 255, 255, 248),
-        )
-        .unwrap();
-        assert_eq!(network.broadcast(), Ipv4Addr::new(10, 0, 0, 7));
+            AddressV4::new(10, 0, 0, 0),
+            SubnetV4::new(255, 255, 255, 255).unwrap(),
+        );
+        assert_eq!(network.broadcast(), AddressV4::new(10, 0, 0, 0));
 
         let network = NetworkV4::new(
-            Ipv4Addr::new(192, 168, 1, 1),
-            Ipv4Addr::new(255, 255, 255, 255),
-        )
-        .unwrap();
-        assert_eq!(network.broadcast(), Ipv4Addr::new(192, 168, 1, 1));
-
-        let network = NetworkV4::new(
-            Ipv4Addr::new(192, 168, 1, 0),
-            Ipv4Addr::new(255, 255, 255, 0),
-        )
-        .unwrap();
-        assert_eq!(network.broadcast(), Ipv4Addr::new(192, 168, 1, 255));
-
-        let network = NetworkV4::new(
-            Ipv4Addr::new(255, 255, 255, 0),
-            Ipv4Addr::new(255, 255, 255, 0),
-        )
-        .unwrap();
-        assert_eq!(network.broadcast(), Ipv4Addr::new(255, 255, 255, 255));
+            AddressV4::new(192, 168, 32, 16),
+            SubnetV4::new(255, 255, 255, 240).unwrap(),
+        );
+        assert_eq!(network.broadcast(), AddressV4::new(192, 168, 32, 31));
     }
 
     #[test]
-    fn test_turned_on_bit() {
-        assert_eq!(first_bit_on(4), 3);
-        assert_eq!(first_bit_on(8), 4);
-        assert_eq!(first_bit_on(14), 4);
-        assert_eq!(first_bit_on(78), 7);
+    fn test_available_hosts() {
+        let network: NetworkV4 = ([10, 0, 0, 0], [255, 255, 255, 0]).try_into().unwrap();
+        assert_eq!(network.available_hosts(), 254);
+
+        let network: NetworkV4 = ([192, 168, 1, 0], [255, 224, 0, 0]).try_into().unwrap();
+        assert_eq!(network.available_hosts(), 2_097_150)
     }
 
     #[test]
-    fn test_mask_for_bit_index() {
-        assert_eq!(mask_by_bit(7), Ipv4Addr::new(255, 255, 255, 128));
-        assert_eq!(mask_by_bit(9), Ipv4Addr::new(255, 255, 254, 0));
+    fn test_subnet_cidr() {
+        let subnet = SubnetV4::new(255, 255, 255, 248).unwrap();
+        assert_eq!(subnet.cidr(), 29);
+
+        let subnet = SubnetV4::new(255, 255, 255, 255).unwrap();
+        assert_eq!(subnet.cidr(), 32);
+
+        let subnet = SubnetV4::new(255, 224, 0, 0).unwrap();
+        assert_eq!(subnet.cidr(), 11);
+    }
+
+    #[test]
+    fn test_network_to_string() {
+        let network = NetworkV4::new(
+            AddressV4::new(10, 0, 0, 0),
+            SubnetV4::new(255, 255, 255, 0).unwrap(),
+        );
+        assert_eq!(network.to_string(), "10.0.0.0/255.255.255.0");
+    }
+
+    #[test]
+    fn test_subnet_to_string() {
+        let subnet = SubnetV4::new(255, 255, 0, 0).unwrap();
+        assert_eq!(subnet.to_string(), "255.255.0.0");
+
+        let subnet = SubnetV4::new(255, 32, 0, 0).unwrap();
+        assert_eq!(subnet.to_string(), "255.32.0.0");
     }
 }
