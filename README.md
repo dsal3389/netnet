@@ -1,3 +1,3 @@
 # netnet
-extension like to Rust builtin `net` crate
+ip handling, extension to built in rust `net` crate
 
