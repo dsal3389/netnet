@@ -4,11 +4,21 @@ mod ipv4;
 mod ipv6;
 
 pub use ipv4::{AddressV4, NetmaskV4, NetworkV4};
-pub use ipv6::AddressV6;
+pub use ipv6::{AddressV6, NetmaskV6, NetworkV6};
 
 pub enum Address {
     V4(AddressV4),
     V6(AddressV6),
+}
+
+pub enum Netmask {
+    V4(NetmaskV4),
+    V6(NetmaskV6),
+}
+
+pub enum Network {
+    V4(NetworkV4),
+    V6(NetworkV6),
 }
 
 pub type Result<T> = std::result::Result<T, NetnetError>;

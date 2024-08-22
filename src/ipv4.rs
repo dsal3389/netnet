@@ -48,7 +48,7 @@ impl NetworkV4 {
         self.address.clone()
     }
 
-    /// returns the network subnet
+    /// returns the network netmask
     pub fn netmask(&self) -> NetmaskV4 {
         self.netmask.clone()
     }
@@ -63,13 +63,27 @@ impl NetworkV4 {
         let jumps = u32::pow(2, self.netmask.host_bits());
         return (self.address.to_bits() + jumps - 1).into();
     }
-
-    /// returns the number of addresses that can be used for host
+    /// returns the number of addresses that can be used for host in the network
     pub fn available_hosts(&self) -> u32 {
         // -2 because the network and broadcast addresses
         u32::pow(2, self.netmask.host_bits()).saturating_sub(2)
     }
 
+    /// gets a smaller network prefix from the current network `cidr`, and
+    /// sub-nets the current network to smaller network chunks based on the given prefix
+    /// note that the prefix must be a valid prefix from 1-32
+    ///
+    /// ```
+    /// let network = Networkv4::from((
+    ///     [10, 0, 0, 0],
+    ///     [255, 0, 0, 0]
+    /// ));
+    ///
+    /// assert_eq!(network.netmask.cidr(), 8);
+    ///
+    /// let sub = network.subnets(24).unwrap().first().unwrap();
+    /// assert_eq!(sub.netmask.cidr(), 24);
+    /// ```
     pub fn subnets(&self, prefix: u32) -> Result<Vec<NetworkV4>> {
         if prefix < self.netmask.cidr() {
             return Err(NetnetError::InvalidPrefix(prefix));
@@ -106,6 +120,11 @@ impl NetmaskV4 {
         })
     }
 
+    /// creates netmask from prefix number
+    /// ```
+    /// netmask = NetmaskV4::form_prefix(24);
+    /// assert_eq!(netmask, NetmaskV4::new(255, 255, 255, 0));
+    /// ```
     pub fn from_prefix(prefix: u32) -> Result<NetmaskV4> {
         let delta = Self::MAX_CIDR - prefix;
         Self::try_from(0xffffffff << delta)
