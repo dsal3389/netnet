@@ -3,7 +3,7 @@ use std::error::Error;
 mod ipv4;
 mod ipv6;
 
-pub use ipv4::{AddressV4, NetmaskV4, NetworkV4};
+pub use ipv4::{AddressV4, NetmaskV4, NetworkV4, NetworkV4Dealer};
 pub use ipv6::{AddressV6, NetmaskV6, NetworkV6};
 
 pub enum Address {

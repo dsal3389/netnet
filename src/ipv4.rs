@@ -29,6 +29,39 @@ pub struct NetworkV4 {
     netmask: NetmaskV4,
 }
 
+/// the network dealer class is more like a network provider, you need a
+/// network that can contain 45 hosts, you as the dealer to give you a new network that
+/// can contain 45 hosts.
+///
+/// the dealer doesn't generates random networks for you to use, the dealer starts from
+/// the network 1.0.0.0/0 and every time you ask for a new network, the dealer will given you
+/// the new network with respect to what he previously gave you.
+///
+/// ```
+/// use netnet::{NetworkV4Dealer, NetworkV4};
+///
+/// let mut dealer = NetworkV4Dealer::new();
+///
+/// let network_a = dealer.for_hostn(45).unwrap();
+/// assert_eq!(network_a, NetworkV4::try_from((
+///     [1, 0, 0, 0],
+///     [255, 255, 255, 192]
+/// )).unwrap());
+///
+/// let network_b = dealer.for_hostn(5).unwrap();
+/// assert_eq!(network_b, NetworkV4::try_from((
+///     [1, 0, 0, 64],
+///     [255, 255, 255, 248]
+/// )).unwrap());
+/// ```
+///
+/// `network_b` is starting from the end of `network_a`, so the returned network does not conflict
+/// with different networks.
+#[derive(Clone, PartialEq, Debug)]
+pub struct NetworkV4Dealer {
+    network: NetworkV4,
+}
+
 impl AddressV4 {
     pub fn new(a: u8, b: u8, c: u8, d: u8) -> Self {
         Self {
@@ -44,11 +77,13 @@ impl NetworkV4 {
     }
 
     /// returns the network address
+    #[inline]
     pub fn address(&self) -> AddressV4 {
         self.address.clone()
     }
 
     /// returns the network netmask
+    #[inline]
     pub fn netmask(&self) -> NetmaskV4 {
         self.netmask.clone()
     }
@@ -64,6 +99,7 @@ impl NetworkV4 {
         return (self.address.to_bits() + jumps - 1).into();
     }
     /// returns the number of addresses that can be used for host in the network
+    #[inline]
     pub fn available_hosts(&self) -> u32 {
         // -2 because the network and broadcast addresses
         u32::pow(2, self.netmask.host_bits()).saturating_sub(2)
@@ -74,15 +110,18 @@ impl NetworkV4 {
     /// note that the prefix must be a valid prefix from 1-32
     ///
     /// ```
-    /// let network = Networkv4::from((
+    /// use netnet::NetworkV4;
+    ///
+    /// let network = NetworkV4::try_from((
     ///     [10, 0, 0, 0],
     ///     [255, 0, 0, 0]
-    /// ));
+    /// )).unwrap();
     ///
-    /// assert_eq!(network.netmask.cidr(), 8);
+    /// assert_eq!(network.netmask().cidr(), 8);
     ///
-    /// let sub = network.subnets(24).unwrap().first().unwrap();
-    /// assert_eq!(sub.netmask.cidr(), 24);
+    /// let subnets = network.subnets(24).unwrap();
+    /// let first = subnets.first().unwrap();
+    /// assert_eq!(first.netmask().cidr(), 24);
     /// ```
     pub fn subnets(&self, prefix: u32) -> Result<Vec<NetworkV4>> {
         if prefix < self.netmask.cidr() {
@@ -122,9 +161,12 @@ impl NetmaskV4 {
 
     /// creates netmask from prefix number
     /// ```
-    /// netmask = NetmaskV4::form_prefix(24);
+    /// use netnet::NetmaskV4;
+    ///
+    /// let netmask = NetmaskV4::from_prefix(24);
     /// assert_eq!(netmask, NetmaskV4::new(255, 255, 255, 0));
     /// ```
+    #[inline]
     pub fn from_prefix(prefix: u32) -> Result<NetmaskV4> {
         let delta = Self::MAX_CIDR - prefix;
         Self::try_from(0xffffffff << delta)
@@ -149,6 +191,43 @@ impl NetmaskV4 {
     #[inline]
     pub fn host_bits(&self) -> u32 {
         self.netmask.to_bits().trailing_zeros()
+    }
+}
+
+impl NetworkV4Dealer {
+    pub fn new() -> Self {
+        Self {
+            network: NetworkV4::new(0x01000000.into(), 0.try_into().unwrap()),
+        }
+    }
+
+    pub fn for_hostn(&mut self, hostn: u32) -> Option<NetworkV4> {
+        let new_netmask = NetmaskV4::from_prefix(Self::cidr_for_hostn(hostn)).unwrap();
+        let new_netmask_jumps = u32::pow(2, new_netmask.cidr());
+        let jumps = u32::pow(2, self.network.netmask.cidr());
+
+        // if case `jumps` eq to 1, it is likely that this is
+        // the first call to `for_hostn` and the initilized
+        // netmask was `0`
+        let network_address = if jumps == 1 {
+            self.network.address()
+        } else {
+            let mut network = u32::from(*self.network.address) + jumps;
+            while network % new_netmask_jumps != 0 {
+                network += jumps;
+            }
+            AddressV4::from(network)
+        };
+
+        self.network = NetworkV4::from((network_address, new_netmask));
+        Some(self.network.clone())
+    }
+
+    /// returns the smallest cidr number for a network
+    /// that can contain the given required hosts number
+    #[inline]
+    pub fn cidr_for_hostn(hostn: u32) -> u32 {
+        hostn.leading_zeros()
     }
 }
 
@@ -261,6 +340,23 @@ impl Deref for AddressV4 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_network_for_hostn() {
+        let mut network_dealer = NetworkV4Dealer::new();
+        let network = network_dealer.for_hostn(5).unwrap();
+
+        assert_eq!(
+            network,
+            NetworkV4::try_from((0x01000000, 0xfffffff8)).unwrap()
+        );
+    }
+
+    #[test]
+    fn test_network_dealer_cidr_calc() {
+        assert_eq!(NetworkV4Dealer::cidr_for_hostn(5), 29);
+        assert_eq!(NetworkV4Dealer::cidr_for_hostn(44), 26)
+    }
 
     #[test]
     fn test_network_subnets() {
